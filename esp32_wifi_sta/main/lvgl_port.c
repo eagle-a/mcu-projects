@@ -21,12 +21,25 @@ static void flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *px_m
     gpio_set_level(TFT_DC, 1);
     
     uint32_t px_count = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
-    spi_transaction_t t = {
-        .length = px_count * 16,
-        .tx_buffer = px_map,
-        .flags = 0,
-    };
-    spi_device_polling_transmit(spi_handle, &t);
+    uint32_t px_total = px_count;
+    uint32_t px_offset = 0;
+    const uint32_t max_px_per_transfer = 1024; // 每次最多传输 1024 个像素
+    
+    while (px_offset < px_total) {
+        uint32_t px_to_send = px_total - px_offset;
+        if (px_to_send > max_px_per_transfer) {
+            px_to_send = max_px_per_transfer;
+        }
+        
+        spi_transaction_t t = {
+            .length = px_to_send * 16,
+            .tx_buffer = px_map + px_offset * 2,
+            .flags = 0,
+        };
+        spi_device_polling_transmit(spi_handle, &t);
+        
+        px_offset += px_to_send;
+    }
     
     lv_display_flush_ready(display);
 }
@@ -43,7 +56,7 @@ void lvgl_port_init(void)
     lv_display_set_flush_cb(disp, flush_cb);
     
     // 设置显示缓冲区
-    static lv_color_t buf[TFT_WIDTH * 10];  // 10 行缓冲
+    static lv_color_t buf[TFT_WIDTH * 20];  // 20 行缓冲
     lv_display_set_buffers(disp, buf, NULL, sizeof(buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
     
     ESP_LOGI(TAG, "LVGL 显示驱动初始化完成");

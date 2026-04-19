@@ -17,6 +17,9 @@
 /*Size of the memory available for `lv_malloc()` in bytes (>= 2kB)*/
 #define LV_MEM_SIZE (16U * 1024U)  /* 16 KB */
 
+/*Enable the built-in performance monitor*/
+#define LV_USE_PERF_MONITOR 1
+
 /*Set an address for memory pool instead of allocating it as a normal array*/
 #define LV_MEM_ADR 0
 
