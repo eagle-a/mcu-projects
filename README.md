@@ -6,19 +6,10 @@
 
 ```
 daily-dev/
-├── src/                  # 源代码
-│   ├── hello_world_main.c    # ESP-IDF hello_world 示例
-│   └── CMakeLists.txt        # 组件构建配置
+├── esp32_led_blink/      # ESP32-C3 LED 控制项目
 ├── docs/                 # 文档
 ├── tests/                # 测试
 ├── scripts/              # 脚本工具
-├── esp32_led_blink/      # ESP32-C3 LED 控制项目
-├── examples/             # ESP-IDF 示例代码
-├── partition_table/      # 分区表组件
-├── ESP-IDF_docs/         # ESP-IDF 文档
-├── export.sh             # ESP-IDF 环境设置脚本
-├── install.sh            # ESP-IDF 安装脚本
-├── Kconfig               # ESP-IDF 配置选项
 └── README.md             # 项目说明
 ```
 
