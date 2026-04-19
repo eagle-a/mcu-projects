@@ -19,6 +19,8 @@ ENV/
 build/
 dist/
 *.egg-info/
+sdkconfig
+sdkconfig.old
 
 # OS
 .DS_Store
@@ -26,3 +28,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# ESP-IDF
+examples/*/build/
+examples/*/sdkconfig
+examples/*/sdkconfig.old
+ESP-IDF_docs/
