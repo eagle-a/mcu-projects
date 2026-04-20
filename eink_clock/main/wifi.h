@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-// WiFi 初始化和连接
+// WiFi initialization and connection
 void wifi_init_sta(void);
 
 #endif // WIFI_H

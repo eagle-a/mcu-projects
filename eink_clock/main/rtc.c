@@ -7,30 +7,31 @@
 #include "esp_event.h"
 #include <time.h>
 #include <sys/time.h>
+#include "config.h"
 
 static const char *TAG = "RTC";
 static bool time_synced = false;
 
 void time_sync_notification(struct timeval *tv)
 {
-    ESP_LOGI(TAG, "时间同步完成: %s", ctime(&tv->tv_sec));
+    ESP_LOGI(TAG, "Time synchronized: %s", ctime(&tv->tv_sec));
     time_synced = true;
 }
 
 void app_rtc_init(void)
 {
-    ESP_LOGI(TAG, "初始化 RTC/NTP 时间同步");
+    ESP_LOGI(TAG, "Initializing RTC/NTP time synchronization");
     
-    // 设置 SNTP 服务器
+    // Set SNTP servers
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
-    esp_sntp_setservername(1, "time.nist.gov");
+    esp_sntp_setservername(0, NTP_SERVER_1);
+    esp_sntp_setservername(1, NTP_SERVER_2);
     esp_sntp_set_time_sync_notification_cb(time_sync_notification);
     
-    // 初始化 SNTP
+    // Initialize SNTP
     esp_sntp_init();
     
-    ESP_LOGI(TAG, "等待时间同步...");
+    ESP_LOGI(TAG, "Waiting for time synchronization...");
 }
 
 void app_rtc_get_time_str(char *buf, size_t buf_size)
