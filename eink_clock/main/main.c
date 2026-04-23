@@ -1,14 +1,17 @@
 #include <stdio.h>
 #include <sys/time.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "epd_driver.h"
 #include "wifi.h"
 #include "rtc.h"
 #include "clock.h"
+#include "almanac.h"
 #include "config.h"
 
 static const char *TAG = "APP_MAIN";
@@ -50,45 +53,33 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing e-ink display...");
     epd_init();
 
-    // Initialize clock display
-    ESP_LOGI(TAG, "Initializing clock...");
-    clock_init();
-
-    // Main loop - update display every minute
-    ESP_LOGI(TAG, "Starting main loop - update every %d seconds", CLOCK_UPDATE_INTERVAL_SEC);
-    
-    time_t last_minute = 0;
-    int update_count = 0;
-    
-    while (1) {
-        time_t now;
-        struct tm timeinfo;
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        
-        // Update at the start of each minute
-        if (timeinfo.tm_min != last_minute) {
-            last_minute = timeinfo.tm_min;
-            update_count++;
-            
-            ESP_LOGI(TAG, "Updating display (update #%d)", update_count);
-            clock_update_display();
-            
-            // Perform full refresh every N updates to clear ghosting
-            if (update_count % CLOCK_FULL_REFRESH_COUNT == 0) {
-                ESP_LOGI(TAG, "Performing full refresh to clear ghosting");
-                clock_draw_face();
-                clock_update_display();
-            }
-            
-#if ENABLE_DEEP_SLEEP
-            // Enter deep sleep to save power
-            ESP_LOGI(TAG, "Entering deep sleep for %d seconds", CLOCK_UPDATE_INTERVAL_SEC - 10);
-            esp_sleep_enable_timer_wakeup((CLOCK_UPDATE_INTERVAL_SEC - 10) * 1000000);
-            esp_deep_sleep_start();
-#endif
+    almanac_data_t almanac = {0};
+    bool ok = false;
+    for (int i = 0; i < ALMANAC_FETCH_RETRY; i++) {
+        if (almanac_fetch(&almanac)) {
+            ok = true;
+            break;
         }
-        
+        ESP_LOGW(TAG, "Almanac fetch failed (%d/%d): %s", i + 1, ALMANAC_FETCH_RETRY, almanac_last_error());
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    if (ok) {
+        clock_draw_calendar(&almanac);
+    } else {
+        clock_draw_error("ALMANAC FETCH FAILED", almanac_last_error());
+    }
+
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+
+#if ENABLE_DEEP_SLEEP
+    ESP_LOGI(TAG, "Entering deep sleep for %d minutes", SLEEP_TIME_MINUTES);
+    esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_TIME_MINUTES * 60ULL * 1000000ULL);
+    esp_deep_sleep_start();
+#endif
+
+    while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

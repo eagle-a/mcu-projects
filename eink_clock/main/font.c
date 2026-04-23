@@ -2,8 +2,6 @@
 #include "epd_driver.h"
 #include "esp_log.h"
 
-static const char *TAG = "FONT";
-
 // Large digit font (16x32 pixels) - 128 bytes per digit
 const uint8_t font_large_digits[10][128] = {
     // 0
@@ -127,7 +125,7 @@ const uint8_t font_large_colon[32] = {
 };
 
 // Medium digit font (12x24 pixels) - 36 bytes per digit
-const uint8_t font_medium_digits[10][36] = {
+const uint8_t font_medium_digits[10][48] = {
     // 0
     {0x0F, 0xF0, 0x3F, 0xFC, 0x70, 0x0E, 0xE0, 0x07, 0xC0, 0x03, 0x80, 0x01,
      0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0xC0, 0x03, 0xE0, 0x07, 0x70, 0x0E,
@@ -209,6 +207,8 @@ const uint8_t font_small_colon[16] = {
 };
 
 // Set pixel in buffer
+// E-ink: bit=0 is BLACK, bit=1 is WHITE
+// color=true means BLACK (draw), false means WHITE (clear)
 static void set_pixel(uint8_t *buf, uint16_t x, uint16_t y, bool color)
 {
     if (x >= EPD_WIDTH || y >= EPD_HEIGHT) return;
@@ -217,38 +217,52 @@ static void set_pixel(uint8_t *buf, uint16_t x, uint16_t y, bool color)
     uint8_t bit_index = 7 - (x % 8);
     
     if (color) {
-        buf[byte_index] |= (1 << bit_index);
-    } else {
+        // BLACK: clear bit to 0
         buf[byte_index] &= ~(1 << bit_index);
+    } else {
+        // WHITE: set bit to 1
+        buf[byte_index] |= (1 << bit_index);
     }
 }
 
-// Draw 16x32 character at position
+// Clear buffer (set all to white - all bits 1)
+void font_clear_buffer(uint8_t *buf)
+{
+    memset(buf, 0xFF, EPD_ARRAY);
+}
+
+// Draw 16x32 character at position - scale small 8x16 font 2x
+// (large/medium bitmap data in this file is corrupt, so derive from small font)
 void font_draw_large_digit(uint8_t *buf, uint16_t x, uint16_t y, uint8_t digit)
 {
     if (digit > 9) digit = 0;
-    
-    for (uint8_t row = 0; row < 32; row++) {
-        for (uint8_t col = 0; col < 16; col++) {
-            uint16_t byte_idx = row * 4 + col / 8;
-            uint8_t bit_idx = 7 - (col % 8);
-            bool pixel = (font_large_digits[digit][byte_idx] >> bit_idx) & 0x01;
-            set_pixel(buf, x + col, y + row, pixel);
+
+    for (uint8_t row = 0; row < 16; row++) {
+        uint8_t byte = font_small_digits[digit][row];
+        for (uint8_t col = 0; col < 8; col++) {
+            bool pixel = (byte >> (7 - col)) & 0x01;
+            // 2x scale: each source pixel becomes 2x2 block
+            set_pixel(buf, x + col * 2,     y + row * 2,     pixel);
+            set_pixel(buf, x + col * 2 + 1, y + row * 2,     pixel);
+            set_pixel(buf, x + col * 2,     y + row * 2 + 1, pixel);
+            set_pixel(buf, x + col * 2 + 1, y + row * 2 + 1, pixel);
         }
     }
 }
 
-// Draw 12x24 character at position
+// Draw 12x24 character at position - scale small 8x16 font 1.5x via nearest neighbor
 void font_draw_medium_digit(uint8_t *buf, uint16_t x, uint16_t y, uint8_t digit)
 {
     if (digit > 9) digit = 0;
-    
-    for (uint8_t row = 0; row < 24; row++) {
-        for (uint8_t col = 0; col < 12; col++) {
-            uint16_t byte_idx = row * 2 + col / 8;
-            uint8_t bit_idx = 7 - (col % 8);
-            bool pixel = (font_medium_digits[digit][byte_idx] >> bit_idx) & 0x01;
-            set_pixel(buf, x + col, y + row, pixel);
+
+    // Target 12x24 from source 8x16 -> scale factor 1.5
+    for (uint8_t dy = 0; dy < 24; dy++) {
+        uint8_t sy = (dy * 16) / 24;  // 0..15
+        uint8_t byte = font_small_digits[digit][sy];
+        for (uint8_t dx = 0; dx < 12; dx++) {
+            uint8_t sx = (dx * 8) / 12;  // 0..7
+            bool pixel = (byte >> (7 - sx)) & 0x01;
+            set_pixel(buf, x + dx, y + dy, pixel);
         }
     }
 }

@@ -7,7 +7,7 @@
 extern const uint8_t font_large_digits[10][128];
 
 // Medium digit font (12x24 pixels) for date display
-extern const uint8_t font_medium_digits[10][36];
+extern const uint8_t font_medium_digits[10][48];
 
 // Small digit font (8x16 pixels) for status display
 extern const uint8_t font_small_digits[10][16];

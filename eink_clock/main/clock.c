@@ -4,7 +4,9 @@
 #include "font.h"
 #include "config.h"
 #include "esp_log.h"
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static const char *TAG = "CLOCK";
 static uint8_t display_buffer[EPD_ARRAY];
@@ -18,9 +20,9 @@ static void set_pixel(uint8_t *buf, uint16_t x, uint16_t y, bool color)
     uint8_t bit_index = 7 - (x % 8);
     
     if (color) {
-        buf[byte_index] |= (1 << bit_index);
-    } else {
         buf[byte_index] &= ~(1 << bit_index);
+    } else {
+        buf[byte_index] |= (1 << bit_index);
     }
 }
 
@@ -28,7 +30,6 @@ static void set_pixel(uint8_t *buf, uint16_t x, uint16_t y, bool color)
 static void draw_centered_time(uint8_t *buf, const char *str, uint16_t y)
 {
     uint16_t char_width = 16;
-    uint16_t char_height = 32;
     uint16_t colon_width = 8;
     uint16_t spacing = 4;
     
@@ -63,7 +64,6 @@ static void draw_centered_date(uint8_t *buf, const char *str, uint16_t y)
 {
     uint16_t char_width = 12;
     uint16_t char_height = 24;
-    uint16_t colon_width = 6;
     uint16_t spacing = 2;
     
     uint16_t len = strlen(str);
@@ -91,6 +91,104 @@ static void draw_centered_date(uint8_t *buf, const char *str, uint16_t y)
             pos += 8 + spacing;
         } else {
             pos += spacing;
+        }
+    }
+}
+
+static void draw_hline(uint8_t *buf, uint16_t x1, uint16_t x2, uint16_t y)
+{
+    for (uint16_t x = x1; x <= x2 && x < EPD_WIDTH; x++) {
+        set_pixel(buf, x, y, true);
+    }
+}
+
+static void draw_vline(uint8_t *buf, uint16_t x, uint16_t y1, uint16_t y2)
+{
+    for (uint16_t y = y1; y <= y2 && y < EPD_HEIGHT; y++) {
+        set_pixel(buf, x, y, true);
+    }
+}
+
+static int parse_date(const char *s, int *y, int *m, int *d)
+{
+    if (!s || sscanf(s, "%d-%d-%d", y, m, d) != 3) {
+        return -1;
+    }
+    return 0;
+}
+
+static int calc_weekday(int year, int month, int day)
+{
+    struct tm tm_value = {
+        .tm_year = year - 1900,
+        .tm_mon = month - 1,
+        .tm_mday = day,
+        .tm_hour = 12,
+    };
+    if (mktime(&tm_value) == (time_t)-1) {
+        return -1;
+    }
+    return tm_value.tm_wday;
+}
+
+static void extract_date_only(const char *src, char *dst, size_t dst_size)
+{
+    size_t n = 0;
+    if (!src || dst_size == 0) {
+        return;
+    }
+    for (size_t i = 0; src[i] != '\0' && n + 1 < dst_size; i++) {
+        char c = src[i];
+        if ((c >= '0' && c <= '9') || c == '-') {
+            dst[n++] = c;
+        }
+        if (n == 10) {
+            break;
+        }
+    }
+    dst[n] = '\0';
+}
+
+static void draw_day_large(uint8_t *buf, int day)
+{
+    int tens = day / 10;
+    int ones = day % 10;
+    if (day < 10) {
+        font_draw_large_digit(buf, 190, 70, ones);
+    } else {
+        font_draw_large_digit(buf, 170, 70, tens);
+        font_draw_large_digit(buf, 192, 70, ones);
+    }
+}
+
+static void draw_ascii_as_blocks(uint8_t *buf, uint16_t x, uint16_t y, const char *text)
+{
+    uint16_t pos = x;
+    for (size_t i = 0; text && text[i] != '\0'; i++) {
+        char c = text[i];
+        if (c >= '0' && c <= '9') {
+            font_draw_small_digit(buf, pos, y, c - '0');
+            pos += 10;
+        } else if (c == ':') {
+            font_draw_small_colon(buf, pos, y);
+            pos += 6;
+        } else if (c == '-') {
+            for (int k = 0; k < 6; k++) set_pixel(buf, pos + k, y + 8, true);
+            pos += 8;
+        } else if (c == ' ') {
+            pos += 6;
+        } else {
+            for (int yy = 0; yy < 8; yy++) {
+                for (int xx = 0; xx < 6; xx++) {
+                    if (yy == 0 || yy == 7 || xx == 0 || xx == 5) {
+                        set_pixel(buf, pos + xx, y + yy, true);
+                    }
+                }
+            }
+            pos += 8;
+        }
+        if (pos > EPD_WIDTH - 12) {
+            break;
         }
     }
 }
@@ -206,10 +304,104 @@ void clock_update_display(void)
 void clock_init(void)
 {
     ESP_LOGI(TAG, "Initializing clock display");
-    
-    // Draw initial clock face
+
     clock_draw_face();
+}
+
+void clock_draw_calendar(const almanac_data_t *data)
+{
+    char time_buf[16] = {0};
+    char date_buf[16] = {0};
+    char api_date[16] = {0};
+    char week_buf[16] = {0};
+    int y = 0, m = 0, d = 0;
+    static const char *week_name[7] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    static bool first_draw = true;
+
+    app_rtc_get_time_str(time_buf, sizeof(time_buf));
+    app_rtc_get_date_str(date_buf, sizeof(date_buf));
+
+    if (data && data->date[0] != '\0') {
+        parse_date(data->date, &y, &m, &d);
+    }
+    if (d <= 0) {
+        parse_date(date_buf, &y, &m, &d);
+    }
+
+    if (data && data->date[0] != '\0') {
+        extract_date_only(data->date, api_date, sizeof(api_date));
+    }
+    if (api_date[0] == '\0') {
+        snprintf(api_date, sizeof(api_date), "%s", date_buf);
+    }
+
+    int wday = (y > 0 && m > 0 && d > 0) ? calc_weekday(y, m, d) : -1;
+    if (wday >= 0 && wday <= 6) {
+        snprintf(week_buf, sizeof(week_buf), "%s", week_name[wday]);
+    } else {
+        snprintf(week_buf, sizeof(week_buf), "N/A");
+    }
+
+    memset(display_buffer, 0xFF, sizeof(display_buffer));
+
+    draw_rectangle(display_buffer, 2, 2, EPD_WIDTH - 4, EPD_HEIGHT - 4, false);
+    draw_hline(display_buffer, 10, EPD_WIDTH - 10, 50);
+    draw_hline(display_buffer, 10, EPD_WIDTH - 10, 180);
+    draw_hline(display_buffer, 10, EPD_WIDTH - 10, 230);
+    draw_vline(display_buffer, 130, 52, 178);
+    draw_vline(display_buffer, 270, 52, 178);
+
+    // Top info similar to Calendar_1day
+    if (m > 0 && d > 0) {
+        char md[32];
+        int mm = (m >= 1 && m <= 12) ? m : 1;
+        int dd = (d >= 1 && d <= 31) ? d : 1;
+        snprintf(md, sizeof(md), "%02d-%02d", mm, dd);
+        draw_centered_date(display_buffer, md, 16);
+    } else {
+        draw_centered_date(display_buffer, date_buf, 16);
+    }
+
+    draw_day_large(display_buffer, d > 0 ? d : 1);
+
+    draw_ascii_as_blocks(display_buffer, 18, 188, "TIME");
+    draw_ascii_as_blocks(display_buffer, 70, 188, time_buf);
+
+    draw_ascii_as_blocks(display_buffer, 18, 208, "DATE");
+    draw_ascii_as_blocks(display_buffer, 70, 208, date_buf);
+
+    if (data) {
+        draw_ascii_as_blocks(display_buffer, 18, 238, "API OK");
+        draw_ascii_as_blocks(display_buffer, 100, 238, api_date);
+        draw_ascii_as_blocks(display_buffer, 18, 258, "WEEK");
+        draw_ascii_as_blocks(display_buffer, 100, 258, week_buf);
+    } else {
+        draw_ascii_as_blocks(display_buffer, 18, 238, "API EMPTY");
+    }
+
+    epd_hw_init();
     
-    // Update with current time
-    clock_update_display();
+    // First time: clear screen to white to ensure clean state
+    if (first_draw) {
+        epd_clear_white();
+        first_draw = false;
+    }
+    
+    epd_display_full(display_buffer);
+    epd_deep_sleep();
+}
+
+void clock_draw_error(const char *title, const char *detail)
+{
+    memset(display_buffer, 0xFF, sizeof(display_buffer));
+    draw_rectangle(display_buffer, 2, 2, EPD_WIDTH - 4, EPD_HEIGHT - 4, false);
+    draw_hline(display_buffer, 10, EPD_WIDTH - 10, 60);
+
+    draw_ascii_as_blocks(display_buffer, 20, 20, "SYSTEM ERROR");
+    draw_ascii_as_blocks(display_buffer, 20, 80, title ? title : "UNKNOWN");
+    draw_ascii_as_blocks(display_buffer, 20, 110, detail ? detail : "-");
+
+    epd_hw_init();
+    epd_display_full(display_buffer);
+    epd_deep_sleep();
 }

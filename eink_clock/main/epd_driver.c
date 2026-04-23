@@ -25,29 +25,36 @@ static void epd_spi_transfer(const uint8_t *data, size_t len, bool is_cmd)
 // Write command
 static void epd_write_cmd(uint8_t cmd)
 {
-    gpio_set_level(EPD_DC_PIN, 0);  // Command mode
-    gpio_set_level(EPD_CS_PIN, 0);   // Chip select low
+    gpio_set_level(EPD_CS_PIN, 0);   // CS low
+    gpio_set_level(EPD_DC_PIN, 0);   // Command mode
     epd_spi_transfer(&cmd, 1, true);
-    gpio_set_level(EPD_CS_PIN, 1);   // Chip select high
+    gpio_set_level(EPD_CS_PIN, 1);   // CS high
 }
 
 // Write data
 static void epd_write_data(uint8_t data)
 {
-    gpio_set_level(EPD_DC_PIN, 1);  // Data mode
-    gpio_set_level(EPD_CS_PIN, 0);   // Chip select low
+    gpio_set_level(EPD_CS_PIN, 0);   // CS low
+    gpio_set_level(EPD_DC_PIN, 1);   // Data mode
     epd_spi_transfer(&data, 1, false);
-    gpio_set_level(EPD_CS_PIN, 1);   // Chip select high
+    gpio_set_level(EPD_CS_PIN, 1);   // CS high
 }
 
 // Wait for display to be ready
+// Note: Z96 panel busy pin is HIGH when busy
 static void epd_wait_busy(void)
 {
-    ESP_LOGD(TAG, "Waiting for display ready...");
+    ESP_LOGI(TAG, "Waiting for display ready...");
+    uint32_t timeout = 0;
     while (gpio_get_level(EPD_BUSY_PIN) == 1) {
         vTaskDelay(pdMS_TO_TICKS(10));
+        timeout += 10;
+        if (timeout > 20000) {  // 20 second timeout
+            ESP_LOGW(TAG, "Busy timeout, forcing continue");
+            break;
+        }
     }
-    ESP_LOGD(TAG, "Display ready");
+    ESP_LOGI(TAG, "Display ready (waited %d ms)", timeout);
 }
 
 // Initialize SPI
@@ -57,8 +64,8 @@ static void epd_spi_init(void)
     
     spi_bus_config_t buscfg = {
         .miso_io_num = -1,  // No MISO for this display
-        .mosi_io_num = 3,  // GPIO3 (IO03 - SPI2_MOSI)
-        .sclk_io_num = 2,  // GPIO2 (IO02 - SPI2_CK)
+        .mosi_io_num = EPD_SPI_MOSI_PIN,
+        .sclk_io_num = EPD_SPI_SCK_PIN,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = EPD_ARRAY + 8,
@@ -67,7 +74,7 @@ static void epd_spi_init(void)
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = EPD_SPI_FREQ,
         .mode = 0,  // SPI_MODE0
-        .spics_io_num = -1,  // Manual CS control
+        .spics_io_num = -1,  // Manual CS control (like reference code)
         .queue_size = 1,
         .flags = SPI_DEVICE_NO_DUMMY,
     };
@@ -83,7 +90,7 @@ static void epd_gpio_init(void)
 {
     ESP_LOGI(TAG, "Initializing GPIO pins");
     
-    // Configure control pins
+    // Configure control pins (RST, DC, CS - all manual control)
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << EPD_RST_PIN) | (1ULL << EPD_DC_PIN) | (1ULL << EPD_CS_PIN),
         .mode = GPIO_MODE_OUTPUT,
@@ -93,11 +100,16 @@ static void epd_gpio_init(void)
     };
     gpio_config(&io_conf);
     
-    // Configure BUSY pin as input
+    // Configure BUSY pin as input with pull-up
     io_conf.pin_bit_mask = (1ULL << EPD_BUSY_PIN);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
+    
+    // Set initial states (CS high = inactive)
+    gpio_set_level(EPD_CS_PIN, 1);
+    gpio_set_level(EPD_RST_PIN, 1);
+    gpio_set_level(EPD_DC_PIN, 1);
     
     ESP_LOGI(TAG, "GPIO initialized: BUSY=%d, RST=%d, DC=%d, CS=%d", 
              EPD_BUSY_PIN, EPD_RST_PIN, EPD_DC_PIN, EPD_CS_PIN);
@@ -113,130 +125,123 @@ void epd_init(void)
     ESP_LOGI(TAG, "E-ink display driver initialized");
 }
 
-void epd_hw_init(void)
+static void epd_init_display_sequence(void)
 {
-    ESP_LOGI(TAG, "Full screen refresh initialization");
-    
-    // Reset
-    gpio_set_level(EPD_RST_PIN, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(EPD_RST_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
+    // T81 (GDEY042T81) initialization sequence
     epd_wait_busy();
-    
+
     // Software reset
     epd_write_cmd(0x12);
     epd_wait_busy();
-    
-    // Driver output control
+
+    // Driver output control: (HEIGHT-1)%256, (HEIGHT-1)/256, 0x01 (mirror to fix orientation)
     epd_write_cmd(0x01);
-    epd_write_data((EPD_HEIGHT - 1) % 256);
-    epd_write_data((EPD_HEIGHT - 1) / 256);
-    epd_write_data(0x00);
-    
-    // Display update control
+    epd_write_data((EPD_HEIGHT - 1) % 256);  // 0x2B for 300 height
+    epd_write_data((EPD_HEIGHT - 1) / 256);  // 0x01 for 300 height
+    epd_write_data(0x01);  // Mirror to fix orientation
+
+    // Display update control: 0x40, 0x00 (T81 specific)
     epd_write_cmd(0x21);
     epd_write_data(0x40);
     epd_write_data(0x00);
-    
-    // Border waveform
+
+    // Border waveform: 0x05 (T81 specific)
     epd_write_cmd(0x3C);
     epd_write_data(0x05);
-    
-    // Data entry mode
+
+    // Data entry mode: 0x01 (Y decrement, X decrement - mirror mode)
     epd_write_cmd(0x11);
     epd_write_data(0x01);
-    
-    // Set RAM X address
+
+    // RAM X address: 0x00 to WIDTH/8-1 (49 for 400 pixels)
     epd_write_cmd(0x44);
     epd_write_data(0x00);
-    epd_write_data(EPD_WIDTH / 8 - 1);
-    
-    // Set RAM Y address
+    epd_write_data((EPD_WIDTH / 8) - 1);  // 49 = 0x31
+
+    // RAM Y address: (HEIGHT-1) to 0x0000
     epd_write_cmd(0x45);
-    epd_write_data((EPD_HEIGHT - 1) % 256);
-    epd_write_data((EPD_HEIGHT - 1) / 256);
+    epd_write_data((EPD_HEIGHT - 1) % 256);  // 0x2B
+    epd_write_data((EPD_HEIGHT - 1) / 256);  // 0x01
     epd_write_data(0x00);
     epd_write_data(0x00);
-    
-    // Set RAM X address counter
+
+    // RAM X counter: 0x00
     epd_write_cmd(0x4E);
     epd_write_data(0x00);
-    
-    // Set RAM Y address counter
+
+    // RAM Y counter: (HEIGHT-1)
     epd_write_cmd(0x4F);
-    epd_write_data((EPD_HEIGHT - 1) % 256);
-    epd_write_data((EPD_HEIGHT - 1) / 256);
+    epd_write_data((EPD_HEIGHT - 1) % 256);  // 0x2B
+    epd_write_data((EPD_HEIGHT - 1) / 256);  // 0x01
     
     epd_wait_busy();
 }
 
+void epd_hw_init(void)
+{
+    ESP_LOGI(TAG, "Full screen refresh initialization (T81)");
+    
+    // Reset sequence - T81 requires at least 10ms delay
+    gpio_set_level(EPD_RST_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(EPD_RST_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    epd_init_display_sequence();
+}
+
 void epd_hw_init_fast(void)
 {
-    ESP_LOGI(TAG, "Fast refresh initialization");
-    
-    // Reset
+    ESP_LOGI(TAG, "Fast refresh initialization (T81)");
+    // T81 fast init: minimal sequence
     gpio_set_level(EPD_RST_PIN, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(EPD_RST_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
     
-    // Software reset
-    epd_write_cmd(0x12);
+    epd_wait_busy();
+    epd_write_cmd(0x12);  // SWRESET
     epd_wait_busy();
     
-    // Display update control
+    // Minimal init for fast update
     epd_write_cmd(0x21);
     epd_write_data(0x40);
     epd_write_data(0x00);
-    
-    // Border waveform
     epd_write_cmd(0x3C);
     epd_write_data(0x05);
-    
-    // Write to temperature register
-    epd_write_cmd(0x1A);
-    epd_write_data(0x6E);
-    
-    // Load temperature value
-    epd_write_cmd(0x22);
-    epd_write_data(0x91);
-    epd_write_cmd(0x20);
-    epd_wait_busy();
-    
-    // Data entry mode
+
+    // Data entry mode (must match full init)
     epd_write_cmd(0x11);
     epd_write_data(0x01);
-    
-    // Set RAM X address
+
+    // RAM X address
     epd_write_cmd(0x44);
     epd_write_data(0x00);
-    epd_write_data(EPD_WIDTH / 8 - 1);
-    
-    // Set RAM Y address
+    epd_write_data((EPD_WIDTH / 8) - 1);
+
+    // RAM Y address
     epd_write_cmd(0x45);
     epd_write_data((EPD_HEIGHT - 1) % 256);
     epd_write_data((EPD_HEIGHT - 1) / 256);
     epd_write_data(0x00);
     epd_write_data(0x00);
-    
-    // Set RAM X address counter
+
+    // RAM X counter
     epd_write_cmd(0x4E);
     epd_write_data(0x00);
-    
-    // Set RAM Y address counter
+
+    // RAM Y counter
     epd_write_cmd(0x4F);
     epd_write_data((EPD_HEIGHT - 1) % 256);
     epd_write_data((EPD_HEIGHT - 1) / 256);
-    
+
     epd_wait_busy();
 }
 
 static void epd_update_full(void)
 {
     epd_write_cmd(0x22);
-    epd_write_data(0xF7);
+    epd_write_data(0xF7);  // T81 (GDEY042T81) full update
     epd_write_cmd(0x20);
     epd_wait_busy();
 }
@@ -261,15 +266,18 @@ void epd_display_full(const uint8_t *datas)
 {
     ESP_LOGI(TAG, "Displaying full screen image");
     
-    // Write to RAM for black/white
+    // Write to RAM for black/white (0x24 command)
     epd_write_cmd(0x24);
     for (uint32_t i = 0; i < EPD_ARRAY; i++) {
         epd_write_data(datas[i]);
     }
     
+    // Write to RAM for red/color (0x26 command)
+    // T81 (IL0398): write inverted red buffer data
+    // For black/white only display, red buffer is 0x00, so ~0x00 = 0xFF (no red)
     epd_write_cmd(0x26);
     for (uint32_t i = 0; i < EPD_ARRAY; i++) {
-        epd_write_data(datas[i]);
+        epd_write_data(0xFF);  // No red pixels
     }
     
     epd_update_full();
@@ -346,7 +354,7 @@ void epd_deep_sleep(void)
 {
     ESP_LOGI(TAG, "Entering deep sleep");
     epd_write_cmd(0x10);
-    epd_write_data(0x01);
+    epd_write_data(0x01);  // T81 (IL0398) uses 0x01
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 

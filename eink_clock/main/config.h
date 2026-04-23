@@ -11,13 +11,17 @@
 #define NTP_SERVER_2 "time.nist.gov"
 #define NTP_SYNC_TIMEOUT_SEC 30
 
+// Almanac API
+#define ALMANAC_API_URL "http://epaper-api.gizfly.com/api/lunar2"
+#define ALMANAC_FETCH_RETRY 3
+
 // Display Configuration
 #define EPD_WIDTH   400 
 #define EPD_HEIGHT  300
 
 // Pin Configuration for ESP32-C3 (基于CORE ESP32C3开发板)
-#define EPD_BUSY_PIN    8   // IO08
-#define EPD_RST_PIN     5   // IO05
+#define EPD_BUSY_PIN    0   // IO00
+#define EPD_RST_PIN     10  // IO10
 #define EPD_DC_PIN      6   // IO06
 #define EPD_CS_PIN      7   // IO07
 
@@ -35,5 +39,6 @@
 
 // Power Management
 #define ENABLE_DEEP_SLEEP 0  // Set to 1 to enable deep sleep between updates
+#define SLEEP_TIME_MINUTES 180
 
 #endif // CONFIG_H
